@@ -18,7 +18,7 @@ bot = Bot(token=BOT_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
-# Список задач с категориями (в реальном проекте лучше использовать базу данных)
+# Список задач с категориями и процентами выполнения (в реальном проекте лучше использовать базу данных)
 tasks = {}
 
 # Состояния для FSM (Finite State Machine)
@@ -27,6 +27,8 @@ class TaskStates(StatesGroup):
     waiting_for_task = State()
     waiting_for_category_to_delete = State()
     waiting_for_task_to_delete = State()
+    waiting_for_task_to_update_progress = State()
+    waiting_for_progress_value = State()
 
 # Команда /start
 @dp.message(Command("start"))
@@ -35,6 +37,7 @@ async def cmd_start(message: types.Message):
     builder.add(KeyboardButton(text="Добавить задачу"))
     builder.add(KeyboardButton(text="Показать задачи"))
     builder.add(KeyboardButton(text="Удалить задачу"))
+    builder.add(KeyboardButton(text="Указать процент выполнения"))  # Добавляем кнопку
     await message.answer(
         "Привет! Я бот-планировщик. Что ты хочешь сделать?",
         reply_markup=builder.as_markup(resize_keyboard=True)
@@ -62,7 +65,7 @@ async def process_task(message: types.Message, state: FSMContext):
     data = await state.get_data()
     category = data.get("category")
     task = message.text.strip()
-    tasks[category].append(task)  # Добавляем задачу в категорию
+    tasks[category].append({"task": task, "progress": 0})  # Добавляем задачу в категорию с начальным процентом выполнения 0
     await message.answer(f"Задача добавлена в категорию '{category}': {task}")
     await state.clear()
 
@@ -73,7 +76,7 @@ async def show_tasks(message: types.Message):
         response = "Ваши задачи:\n"
         for category, task_list in tasks.items():
             if task_list:
-                tasks_list = "\n".join([f"{i + 1}. {task}" for i, task in enumerate(task_list)])
+                tasks_list = "\n".join([f"{i + 1}. {task['task']} ({task['progress']}%)" for i, task in enumerate(task_list)])
                 response += f"\nКатегория: {category}\n{tasks_list}\n"
         await message.answer(response)
     else:
@@ -99,7 +102,7 @@ async def process_category_to_delete(message: types.Message, state: FSMContext):
             category = categories[category_number]
             task_list = tasks[category]
             if task_list:
-                tasks_list = "\n".join([f"{i + 1}. {task}" for i, task in enumerate(task_list)])
+                tasks_list = "\n".join([f"{i + 1}. {task['task']} ({task['progress']}%)" for i, task in enumerate(task_list)])
                 await message.answer(f"Введите номер задачи для удаления из категории '{category}':\n{tasks_list}")
                 await state.update_data(category=category)  # Сохраняем категорию в состоянии
                 await state.set_state(TaskStates.waiting_for_task_to_delete)
@@ -123,7 +126,7 @@ async def process_task_number_to_delete(message: types.Message, state: FSMContex
         task_list = tasks[category]
         if 0 <= task_number < len(task_list):
             removed_task = task_list.pop(task_number)
-            await message.answer(f"Задача удалена из категории '{category}': {removed_task}")
+            await message.answer(f"Задача удалена из категории '{category}': {removed_task['task']}")
             if not task_list:  # Если в категории больше нет задач, удаляем её
                 del tasks[category]
         else:
@@ -132,6 +135,60 @@ async def process_task_number_to_delete(message: types.Message, state: FSMContex
     except ValueError:
         await message.answer("Пожалуйста, введите число.")
         await state.clear()  # Очищаем состояние после ошибки
+
+# Обработка кнопки "Указать процент выполнения"
+@dp.message(lambda message: message.text == "Указать процент выполнения")
+async def update_progress(message: types.Message, state: FSMContext):
+    if tasks:
+        categories_list = "\n".join([f"{i + 1}. {category}" for i, category in enumerate(tasks.keys())])
+        await message.answer(f"Выберите категорию для обновления прогресса задачи:\n{categories_list}")
+        await state.set_state(TaskStates.waiting_for_task_to_update_progress)
+    else:
+        await message.answer("Задач пока нет.")
+
+# Обработка ввода номера категории для обновления прогресса
+@dp.message(TaskStates.waiting_for_task_to_update_progress)
+async def process_category_to_update_progress(message: types.Message, state: FSMContext):
+    try:
+        category_number = int(message.text) - 1
+        categories = list(tasks.keys())
+        if 0 <= category_number < len(categories):
+            category = categories[category_number]
+            task_list = tasks[category]
+            if task_list:
+                tasks_list = "\n".join([f"{i + 1}. {task['task']} ({task['progress']}%)" for i, task in enumerate(task_list)])
+                await message.answer(f"Введите номер задачи для обновления прогресса в категории '{category}':\n{tasks_list}")
+                await state.update_data(category=category)  # Сохраняем категорию в состоянии
+                await state.set_state(TaskStates.waiting_for_progress_value)
+            else:
+                await message.answer(f"В категории '{category}' задач нет.")
+                await state.clear()
+        else:
+            await message.answer("Неверный номер категории.")
+            await state.clear()
+    except ValueError:
+        await message.answer("Пожалуйста, введите число.")
+        await state.clear()
+
+# Обработка ввода процента выполнения
+@dp.message(TaskStates.waiting_for_progress_value)
+async def process_progress_value(message: types.Message, state: FSMContext):
+    try:
+        progress = int(message.text)
+        if 0 <= progress <= 100:
+            data = await state.get_data()
+            category = data.get("category")
+            task_list = tasks[category]
+            task_number = data.get("task_number")
+            task_list[task_number]["progress"] = progress
+            await message.answer(f"Прогресс задачи '{task_list[task_number]['task']}' обновлен до {progress}%.")
+            await state.clear()
+        else:
+            await message.answer("Пожалуйста, введите число от 0 до 100.")
+            await state.clear()
+    except ValueError:
+        await message.answer("Пожалуйста, введите число.")
+        await state.clear()
 
 # Запуск бота
 async def main():
