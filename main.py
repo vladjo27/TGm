@@ -6,6 +6,7 @@ from aiogram.utils.keyboard import ReplyKeyboardBuilder
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
+import tempfile
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -19,7 +20,7 @@ storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
 # Список задач с категориями и процентами выполнения (в реальном проекте лучше использовать базу данных)
-tasks = {}
+user_tasks = {}
 
 # Состояния для FSM (Finite State Machine)
 class TaskStates(StatesGroup):
@@ -29,32 +30,48 @@ class TaskStates(StatesGroup):
     waiting_for_task_to_delete = State()
     waiting_for_task_to_update_progress = State()
     waiting_for_progress_value = State()
+    waiting_for_category_to_change = State()
+    waiting_for_task_to_change_category = State()
+    waiting_for_new_category = State()
 
 # Команда /start
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    builder = ReplyKeyboardBuilder()
-    builder.add(KeyboardButton(text="Добавить задачу"))
-    builder.add(KeyboardButton(text="Показать задачи"))
-    builder.add(KeyboardButton(text="Удалить задачу"))
-    builder.add(KeyboardButton(text="Указать процент выполнения"))
+    keyboard = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="Добавить задачу")],
+            [KeyboardButton(text="Показать задачи")],
+            [KeyboardButton(text="Удалить задачу")],
+            [KeyboardButton(text="Указать процент выполнения")],
+            [KeyboardButton(text="Показать статистику задач")],
+            [KeyboardButton(text="Очистить все задачи")],
+            [KeyboardButton(text="Экспорт задач")],
+            [KeyboardButton(text="Изменить категорию задачи")],
+            [KeyboardButton(text="Показать завершенные задачи")]
+        ],
+        resize_keyboard=True
+    )
     await message.answer(
         "Привет! Я бот-планировщик. Что ты хочешь сделать?",
-        reply_markup=builder.as_markup(resize_keyboard=True)
+        reply_markup=keyboard
     )
 
 # Обработка кнопки "Добавить задачу"
 @dp.message(lambda message: message.text == "Добавить задачу")
 async def add_task(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    if user_id not in user_tasks:
+        user_tasks[user_id] = {}
     await message.answer("Введите категорию для задачи (например, Работа, Учёба, Личное):")
     await state.set_state(TaskStates.waiting_for_category)
 
 # Обработка ввода категории
 @dp.message(TaskStates.waiting_for_category)
 async def process_category(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
     category = message.text.strip()
-    if category not in tasks:
-        tasks[category] = []  # Создаём новую категорию, если её нет
+    if category not in user_tasks[user_id]:
+        user_tasks[user_id][category] = []  # Создаём новую категорию, если её нет
     await state.update_data(category=category)  # Сохраняем категорию в состоянии
     await message.answer(f"Категория '{category}' выбрана. Теперь введите задачу:")
     await state.set_state(TaskStates.waiting_for_task)
@@ -62,19 +79,21 @@ async def process_category(message: types.Message, state: FSMContext):
 # Обработка ввода задачи
 @dp.message(TaskStates.waiting_for_task)
 async def process_task(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
     data = await state.get_data()
     category = data.get("category")
     task = message.text.strip()
-    tasks[category].append({"task": task, "progress": 0})  # Добавляем задачу в категорию с начальным процентом выполнения 0
+    user_tasks[user_id][category].append({"task": task, "progress": 0})  # Добавляем задачу в категорию с начальным процентом выполнения 0
     await message.answer(f"Задача добавлена в категорию '{category}': {task}")
     await state.clear()
 
 # Обработка кнопки "Показать задачи"
 @dp.message(lambda message: message.text == "Показать задачи")
 async def show_tasks(message: types.Message):
-    if tasks:
+    user_id = message.from_user.id
+    if user_id in user_tasks and user_tasks[user_id]:
         response = "Ваши задачи:\n"
-        for category, task_list in tasks.items():
+        for category, task_list in user_tasks[user_id].items():
             if task_list:
                 tasks_list = "\n".join([f"{i + 1}. {task['task']} ({task['progress']}%)" for i, task in enumerate(task_list)])
                 response += f"\nКатегория: {category}\n{tasks_list}\n"
@@ -85,8 +104,9 @@ async def show_tasks(message: types.Message):
 # Обработка кнопки "Удалить задачу"
 @dp.message(lambda message: message.text == "Удалить задачу")
 async def delete_task(message: types.Message, state: FSMContext):
-    if tasks:
-        categories_list = "\n".join([f"{i + 1}. {category}" for i, category in enumerate(tasks.keys())])
+    user_id = message.from_user.id
+    if user_id in user_tasks and user_tasks[user_id]:
+        categories_list = "\n".join([f"{i + 1}. {category}" for i, category in enumerate(user_tasks[user_id].keys())])
         await message.answer(f"Выберите категорию для удаления задачи:\n{categories_list}")
         await state.set_state(TaskStates.waiting_for_category_to_delete)
     else:
@@ -190,30 +210,6 @@ async def process_progress_value(message: types.Message, state: FSMContext):
         await message.answer("Пожалуйста, введите число.")
         await state.clear()
 
-# Запуск бота
-async def main():
-    await dp.start_polling(bot)
-
-if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())# Команда /start с добавлением новых кнопок
-@dp.message(Command("start"))
-async def cmd_start(message: types.Message):
-    builder = ReplyKeyboardBuilder()
-    builder.add(KeyboardButton(text="Добавить задачу"))
-    builder.add(KeyboardButton(text="Показать задачи"))
-    builder.add(KeyboardButton(text="Удалить задачу"))
-    builder.add(KeyboardButton(text="Указать процент выполнения"))
-    builder.add(KeyboardButton(text="Показать статистику задач"))
-    builder.add(KeyboardButton(text="Очистить все задачи"))
-    builder.add(KeyboardButton(text="Экспорт задач"))
-    builder.add(KeyboardButton(text="Изменить категорию задачи"))
-    builder.add(KeyboardButton(text="Показать завершенные задачи"))
-    await message.answer(
-        "Привет! Я бот-планировщик. Что ты хочешь сделать?",
-        reply_markup=builder.as_markup(resize_keyboard=True)
-    )
-
 # Обработка кнопки "Показать статистику задач"
 @dp.message(lambda message: message.text == "Показать статистику задач")
 async def show_statistics(message: types.Message):
@@ -242,7 +238,10 @@ async def export_tasks(message: types.Message):
             if task_list:
                 tasks_list = "\n".join([f"{i + 1}. {task['task']} ({task['progress']}%)" for i, task in enumerate(task_list)])
                 export_text += f"\nКатегория: {category}\n{tasks_list}\n"
-        await message.answer_document(types.InputFile(export_text.encode(), filename="tasks.txt"))
+        with tempfile.NamedTemporaryFile(mode='w+', suffix='.txt', delete=False) as temp_file:
+            temp_file.write(export_text)
+            temp_file.seek(0)
+            await message.answer_document(types.InputFile(temp_file.name, filename="tasks.txt"))
     else:
         await message.answer("Задач пока нет.")
 
@@ -330,3 +329,11 @@ async def show_completed_tasks(message: types.Message):
         await message.answer(response)
     else:
         await message.answer("Задач пока нет.")
+
+# Запуск бота
+async def main():
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(main())
