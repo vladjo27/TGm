@@ -12,7 +12,7 @@ import tempfile
 logging.basicConfig(level=logging.INFO)
 
 # Токен вашего бота
-BOT_TOKEN = '7730408777:AAEHH8vZcpXIAAH0n5zz6-J3Fw_TkrU7gOg'
+BOT_TOKEN = '75zz6-J3Fw_TkrU7gOg'
 
 # Инициализация бота и диспетчера
 bot = Bot(token=BOT_TOKEN)
