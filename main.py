@@ -1,4 +1,3 @@
-исправь код, он не работает 
 import logging
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
@@ -14,7 +13,7 @@ from enum import Enum, auto
 logging.basicConfig(level=logging.INFO)
 
 # Токен вашего бота
-BOT_TOKEN = '7730408777:AAEHH8vZcpXIAAH0n5zz6-J3Fw_TkrU7gOg'
+BOT_TOKEN = 
 
 # Инициализация бота и диспетчера
 bot = Bot(token=BOT_TOKEN)
@@ -58,7 +57,6 @@ async def cmd_start(message: types.Message):
     user_id = message.from_user.id
     if user_id not in user_tasks:
         user_tasks[user_id] = {}
-    
     keyboard = ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="Добавить задачу")],
@@ -189,7 +187,7 @@ async def process_task_number_to_delete(message: types.Message, state: FSMContex
 # Обработка кнопки "Указать процент выполнения"
 @dp.message(lambda message: message.text == "Указать процент выполнения")
 async def update_progress(message: types.Message, state: FSMContext):
-    await get_category(message, state, TaskStates.waiting_for_task_to_update_progress)
+    await get_category(message, state, TaskStates.waiting_for_category_to_update_progress)
 
 # Обработка ввода номера категории для обновления прогресса
 @dp.message(TaskStates.waiting_for_task_to_update_progress)
