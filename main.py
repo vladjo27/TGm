@@ -259,10 +259,10 @@ async def process_progress_value(message: types.Message, state: FSMContext):
             await message.answer(f"Прогресс задачи обновлен до {progress}%.")
         else:
             await message.answer("Пожалуйста, введите число от 0 до 100.")
-        await state.clear()
+            await state.set_state(TaskStates.waiting_for_progress_value)  # Вернуться к вводу прогресса
     except ValueError:
         await message.answer("Пожалуйста, введите число.")
-        await state.clear()
+        await state.set_state(TaskStates.waiting_for_progress_value)  # Вернуться к вводу прогресса
 
 # Обработка кнопки "Показать статистику задач"
 @dp.message(lambda message: message.text == "Показать статистику задач")
