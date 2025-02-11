@@ -348,25 +348,7 @@ async def process_new_category(message: types.Message, state: FSMContext):
     conn.commit()
     await message.answer(f"Задача '{data.get('task_to_move')}' перемещена в категорию '{new_category}'.")
     await state.clear()
-@dp.message(TaskStates.waiting_for_task_to_select)
-async def process_task_to_select(message: types.Message, state: FSMContext):
-    user_id = (await state.get_data()).get("user_id")
-    try:
-        task_number = int(message.text) - 1
-        data = await state.get_data()
-        category = data.get("category")
-        task_list = data.get("task_list")
-        if 0 <= task_number < len(task_list):
-            task_id = task_list[task_number][0]
-            await message.answer("Введите новый процент выполнения (от 0 до 100):")
-            await state.update_data(task_id=task_id)
-            await state.set_state(TaskStates.waiting_for_progress_value)
-        else:
-            await message.answer("Неверный номер задачи.")
-            await state.clear()
-    except ValueError:
-        await message.answer("Пожалуйста, введите число.")
-        await state.clear()
+
 # Обработка кнопки "Показать завершенные задачи"
 @dp.message(lambda message: message.text == "Показать завершенные задачи")
 async def show_completed_tasks(message: types.Message):
