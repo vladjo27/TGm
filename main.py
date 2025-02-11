@@ -1,4 +1,5 @@
 import logging
+import sqlite3
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
@@ -13,15 +14,34 @@ from enum import Enum, auto
 logging.basicConfig(level=logging.INFO)
 
 # Токен вашего бота
-BOT_TOKEN = '
+BOT_TOKEN = '7730408777:AAEHH8vZcpXIAAH0n5zz6-J3Fw_TkrU7gOg'
 
 # Инициализация бота и диспетчера
 bot = Bot(token=BOT_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
-# Словарь для хранения задач с категориями и процентами выполнения для каждого пользователя
-user_tasks = {}
+# Подключение к базе данных
+conn = sqlite3.connect('tasks.db', check_same_thread=False)
+cursor = conn.cursor()
+
+# Создание таблиц
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS users (
+    user_id INTEGER PRIMARY KEY
+)
+''')
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS tasks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    category TEXT,
+    task TEXT,
+    progress INTEGER DEFAULT 0,
+    FOREIGN KEY (user_id) REFERENCES users (user_id)
+)
+''')
+conn.commit()
 
 # Состояния для FSM (Finite State Machine)
 class TaskStates(StatesGroup):
@@ -34,11 +54,14 @@ class TaskStates(StatesGroup):
     waiting_for_category_to_change = State()
     waiting_for_task_to_change_category = State()
     waiting_for_new_category = State()
+    waiting_for_task_to_select = State()  # Добавлено новое состояние
 
 @dataclass
 class Task:
+    id: int
+    category: str
     task: str
-    progress: int = 0
+    progress: int
 
 class Actions(Enum):
     ADD_TASK = auto()
@@ -51,26 +74,30 @@ class Actions(Enum):
     CHANGE_TASK_CATEGORY = auto()
     SHOW_COMPLETED_TASKS = auto()
 
+# Функция для создания клавиатуры
+def create_keyboard(buttons):
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text=btn)] for btn in buttons],
+        resize_keyboard=True
+    )
+
 # Команда /start
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     user_id = message.from_user.id
-    if user_id not in user_tasks:
-        user_tasks[user_id] = {}
-    keyboard = ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="Добавить задачу")],
-            [KeyboardButton(text="Показать задачи")],
-            [KeyboardButton(text="Удалить задачу")],
-            [KeyboardButton(text="Указать процент выполнения")],
-            [KeyboardButton(text="Показать статистику задач")],
-            [KeyboardButton(text="Очистить все задачи")],
-            [KeyboardButton(text="Экспорт задач")],
-            [KeyboardButton(text="Изменить категорию задачи")],
-            [KeyboardButton(text="Показать завершенные задачи")]
-        ],
-        resize_keyboard=True
-    )
+    cursor.execute('INSERT OR IGNORE INTO users (user_id) VALUES (?)', (user_id,))
+    conn.commit()
+    keyboard = create_keyboard([
+        "Добавить задачу",
+        "Показать задачи",
+        "Удалить задачу",
+        "Указать процент выполнения",
+        "Показать статистику задач",
+        "Очистить все задачи",
+        "Экспорт задач",
+        "Изменить категорию задачи",
+        "Показать завершенные задачи"
+    ])
     await message.answer(
         "Привет! Я бот-планировщик. Что ты хочешь сделать?",
         reply_markup=keyboard
@@ -78,8 +105,10 @@ async def cmd_start(message: types.Message):
 
 async def get_category(message: types.Message, state: FSMContext, next_state: State):
     user_id = message.from_user.id
-    if user_id in user_tasks and user_tasks[user_id]:
-        categories_list = "\n".join([f"{i + 1}. {category}" for i, category in enumerate(user_tasks[user_id].keys())])
+    cursor.execute('SELECT DISTINCT category FROM tasks WHERE user_id = ?', (user_id,))
+    categories = cursor.fetchall()
+    if categories:
+        categories_list = "\n".join([f"{i + 1}. {category[0]}" for i, category in enumerate(categories)])
         await message.answer(f"Выберите категорию:\n{categories_list}")
         await state.set_state(next_state)
         await state.update_data(user_id=user_id)
@@ -91,14 +120,16 @@ async def get_task(message: types.Message, state: FSMContext, next_state: State)
     user_id = (await state.get_data()).get("user_id")
     try:
         category_number = int(message.text) - 1
-        categories = list(user_tasks[user_id].keys())
+        cursor.execute('SELECT DISTINCT category FROM tasks WHERE user_id = ?', (user_id,))
+        categories = cursor.fetchall()
         if 0 <= category_number < len(categories):
-            category = categories[category_number]
-            task_list = user_tasks[user_id][category]
+            category = categories[category_number][0]
+            cursor.execute('SELECT id, task, progress FROM tasks WHERE user_id = ? AND category = ?', (user_id, category))
+            task_list = cursor.fetchall()
             if task_list:
-                tasks_list = "\n".join([f"{i + 1}. {task.task} ({task.progress}%)" for i, task in enumerate(task_list)])
+                tasks_list = "\n".join([f"{i + 1}. {task[1]} ({task[2]}%)" for i, task in enumerate(task_list)])
                 await message.answer(f"Введите номер задачи:\n{tasks_list}")
-                await state.update_data(category=category)
+                await state.update_data(category=category, task_list=task_list)
                 await state.set_state(next_state)
             else:
                 await message.answer(f"В категории '{category}' задач нет.")
@@ -122,8 +153,6 @@ async def add_task(message: types.Message, state: FSMContext):
 async def process_category(message: types.Message, state: FSMContext):
     user_id = (await state.get_data()).get("user_id")
     category = message.text.strip()
-    if category not in user_tasks[user_id]:
-        user_tasks[user_id][category] = []
     await state.update_data(category=category)
     await message.answer(f"Категория '{category}' выбрана. Теперь введите задачу:")
     await state.set_state(TaskStates.waiting_for_task)
@@ -134,21 +163,22 @@ async def process_task(message: types.Message, state: FSMContext):
     user_id = (await state.get_data()).get("user_id")
     data = await state.get_data()
     category = data.get("category")
-    task = Task(task=message.text.strip())
-    user_tasks[user_id][category].append(task)
-    await message.answer(f"Задача добавлена в категорию '{category}': {task.task}")
+    task = message.text.strip()
+    cursor.execute('INSERT INTO tasks (user_id, category, task) VALUES (?, ?, ?)', (user_id, category, task))
+    conn.commit()
+    await message.answer(f"Задача добавлена в категорию '{category}': {task}")
     await state.clear()
 
 # Обработка кнопки "Показать задачи"
 @dp.message(lambda message: message.text == "Показать задачи")
 async def show_tasks(message: types.Message):
     user_id = message.from_user.id
-    if user_id in user_tasks and user_tasks[user_id]:
+    cursor.execute('SELECT category, task, progress FROM tasks WHERE user_id = ?', (user_id,))
+    tasks = cursor.fetchall()
+    if tasks:
         response = "Ваши задачи:\n"
-        for category, task_list in user_tasks[user_id].items():
-            if task_list:
-                tasks_list = "\n".join([f"{i + 1}. {task.task} ({task.progress}%)" for i, task in enumerate(task_list)])
-                response += f"\nКатегория: {category}\n{tasks_list}\n"
+        for category, task, progress in tasks:
+            response += f"\nКатегория: {category}\nЗадача: {task} ({progress}%)\n"
         await message.answer(response)
     else:
         await message.answer("Задач пока нет.")
@@ -171,12 +201,12 @@ async def process_task_number_to_delete(message: types.Message, state: FSMContex
         task_number = int(message.text) - 1
         data = await state.get_data()
         category = data.get("category")
-        task_list = user_tasks[user_id][category]
+        task_list = data.get("task_list")
         if 0 <= task_number < len(task_list):
-            removed_task = task_list.pop(task_number)
-            await message.answer(f"Задача удалена из категории '{category}': {removed_task.task}")
-            if not task_list:
-                del user_tasks[user_id][category]
+            task_id = task_list[task_number][0]
+            cursor.execute('DELETE FROM tasks WHERE id = ?', (task_id,))
+            conn.commit()
+            await message.answer(f"Задача удалена из категории '{category}'.")
         else:
             await message.answer("Неверный номер задачи.")
             await state.clear()
@@ -192,7 +222,28 @@ async def update_progress(message: types.Message, state: FSMContext):
 # Обработка ввода номера категории для обновления прогресса
 @dp.message(TaskStates.waiting_for_task_to_update_progress)
 async def process_category_to_update_progress(message: types.Message, state: FSMContext):
-    await get_task(message, state, TaskStates.waiting_for_progress_value)
+    await get_task(message, state, TaskStates.waiting_for_task_to_select)
+
+# Обработка выбора задачи для обновления прогресса
+@dp.message(TaskStates.waiting_for_task_to_select)
+async def process_task_to_select(message: types.Message, state: FSMContext):
+    user_id = (await state.get_data()).get("user_id")
+    try:
+        task_number = int(message.text) - 1
+        data = await state.get_data()
+        category = data.get("category")
+        task_list = data.get("task_list")
+        if 0 <= task_number < len(task_list):
+            task_id = task_list[task_number][0]
+            await message.answer("Введите новый процент выполнения (от 0 до 100):")
+            await state.update_data(task_id=task_id)
+            await state.set_state(TaskStates.waiting_for_progress_value)
+        else:
+            await message.answer("Неверный номер задачи.")
+            await state.clear()
+    except ValueError:
+        await message.answer("Пожалуйста, введите число.")
+        await state.clear()
 
 # Обработка ввода процента выполнения
 @dp.message(TaskStates.waiting_for_progress_value)
@@ -202,15 +253,13 @@ async def process_progress_value(message: types.Message, state: FSMContext):
         progress = int(message.text)
         if 0 <= progress <= 100:
             data = await state.get_data()
-            category = data.get("category")
-            task_list = user_tasks[user_id][category]
-            task_number = data.get("task_number")
-            task_list[task_number].progress = progress
-            await message.answer(f"Прогресс задачи '{task_list[task_number].task}' обновлен до {progress}%.")
-            await state.clear()
+            task_id = data.get("task_id")
+            cursor.execute('UPDATE tasks SET progress = ? WHERE id = ?', (progress, task_id))
+            conn.commit()
+            await message.answer(f"Прогресс задачи обновлен до {progress}%.")
         else:
             await message.answer("Пожалуйста, введите число от 0 до 100.")
-            await state.clear()
+        await state.clear()
     except ValueError:
         await message.answer("Пожалуйста, введите число.")
         await state.clear()
@@ -219,12 +268,12 @@ async def process_progress_value(message: types.Message, state: FSMContext):
 @dp.message(lambda message: message.text == "Показать статистику задач")
 async def show_statistics(message: types.Message):
     user_id = message.from_user.id
-    if user_id in user_tasks and user_tasks[user_id]:
+    cursor.execute('SELECT category, COUNT(*) AS total, SUM(progress = 100) AS completed FROM tasks WHERE user_id = ? GROUP BY category', (user_id,))
+    statistics = cursor.fetchall()
+    if statistics:
         response = "Статистика задач:\n"
-        for category, task_list in user_tasks[user_id].items():
-            total_tasks = len(task_list)
-            completed_tasks = sum(1 for task in task_list if task.progress == 100)
-            response += f"\nКатегория: {category}\nВсего задач: {total_tasks}\nЗавершено: {completed_tasks}\n"
+        for category, total, completed in statistics:
+            response += f"\nКатегория: {category}\nВсего задач: {total}\nЗавершено: {completed}\n"
         await message.answer(response)
     else:
         await message.answer("Задач пока нет.")
@@ -233,20 +282,20 @@ async def show_statistics(message: types.Message):
 @dp.message(lambda message: message.text == "Очистить все задачи")
 async def clear_all_tasks(message: types.Message):
     user_id = message.from_user.id
-    if user_id in user_tasks:
-        user_tasks[user_id].clear()
+    cursor.execute('DELETE FROM tasks WHERE user_id = ?', (user_id,))
+    conn.commit()
     await message.answer("Все задачи и категории удалены.")
 
 # Обработка кнопки "Экспорт задач"
 @dp.message(lambda message: message.text == "Экспорт задач")
 async def export_tasks(message: types.Message):
     user_id = message.from_user.id
-    if user_id in user_tasks and user_tasks[user_id]:
+    cursor.execute('SELECT category, task, progress FROM tasks WHERE user_id = ?', (user_id,))
+    tasks = cursor.fetchall()
+    if tasks:
         export_text = "Ваши задачи:\n"
-        for category, task_list in user_tasks[user_id].items():
-            if task_list:
-                tasks_list = "\n".join([f"{i + 1}. {task.task} ({task.progress}%)" for i, task in enumerate(task_list)])
-                export_text += f"\nКатегория: {category}\n{tasks_list}\n"
+        for category, task, progress in tasks:
+            export_text += f"\nКатегория: {category}\nЗадача: {task} ({progress}%)\n"
         with tempfile.NamedTemporaryFile(mode='w+', suffix='.txt', delete=False) as temp_file:
             temp_file.write(export_text)
             temp_file.seek(0)
@@ -272,11 +321,13 @@ async def process_task_number_to_change_category(message: types.Message, state: 
         task_number = int(message.text) - 1
         data = await state.get_data()
         category = data.get("category")
-        task_list = user_tasks[user_id][category]
+        task_list = data.get("task_list")
         if 0 <= task_number < len(task_list):
-            task_to_move = task_list[task_number]
-            await message.answer(f"Выберите новую категорию для задачи '{task_to_move.task}':")
-            await state.update_data(task_to_move=task_to_move, old_category=category, task_number=task_number)
+            task_id = task_list[task_number][0]
+            cursor.execute('SELECT task FROM tasks WHERE id = ?', (task_id,))
+            task_to_move = cursor.fetchone()[0]
+            await message.answer(f"Выберите новую категорию для задачи '{task_to_move}':")
+            await state.update_data(task_id=task_id, task_to_move=task_to_move, old_category=category)
             await state.set_state(TaskStates.waiting_for_new_category)
         else:
             await message.answer("Неверный номер задачи.")
@@ -291,32 +342,44 @@ async def process_new_category(message: types.Message, state: FSMContext):
     user_id = (await state.get_data()).get("user_id")
     new_category = message.text.strip()
     data = await state.get_data()
-    task_to_move = data.get("task_to_move")
+    task_id = data.get("task_id")
     old_category = data.get("old_category")
-    task_number = data.get("task_number")
-    if new_category not in user_tasks[user_id]:
-        user_tasks[user_id][new_category] = []
-    user_tasks[user_id][new_category].append(task_to_move)
-    user_tasks[user_id][old_category].pop(task_number)
-    if not user_tasks[user_id][old_category]:
-        del user_tasks[user_id][old_category]
-    await message.answer(f"Задача '{task_to_move.task}' перемещена в категорию '{new_category}'.")
+    cursor.execute('UPDATE tasks SET category = ? WHERE id = ?', (new_category, task_id))
+    conn.commit()
+    await message.answer(f"Задача '{data.get('task_to_move')}' перемещена в категорию '{new_category}'.")
     await state.clear()
-
+@dp.message(TaskStates.waiting_for_task_to_select)
+async def process_task_to_select(message: types.Message, state: FSMContext):
+    user_id = (await state.get_data()).get("user_id")
+    try:
+        task_number = int(message.text) - 1
+        data = await state.get_data()
+        category = data.get("category")
+        task_list = data.get("task_list")
+        if 0 <= task_number < len(task_list):
+            task_id = task_list[task_number][0]
+            await message.answer("Введите новый процент выполнения (от 0 до 100):")
+            await state.update_data(task_id=task_id)
+            await state.set_state(TaskStates.waiting_for_progress_value)
+        else:
+            await message.answer("Неверный номер задачи.")
+            await state.clear()
+    except ValueError:
+        await message.answer("Пожалуйста, введите число.")
+        await state.clear()
 # Обработка кнопки "Показать завершенные задачи"
 @dp.message(lambda message: message.text == "Показать завершенные задачи")
 async def show_completed_tasks(message: types.Message):
     user_id = message.from_user.id
-    if user_id in user_tasks and user_tasks[user_id]:
+    cursor.execute('SELECT category, task, progress FROM tasks WHERE user_id = ? AND progress = 100', (user_id,))
+    completed_tasks = cursor.fetchall()
+    if completed_tasks:
         response = "Завершенные задачи:\n"
-        for category, task_list in user_tasks[user_id].items():
-            completed_tasks = [task for task in task_list if task.progress == 100]
-            if completed_tasks:
-                tasks_list = "\n".join([f"{i + 1}. {task.task} ({task.progress}%)" for i, task in enumerate(completed_tasks)])
-                response += f"\nКатегория: {category}\n{tasks_list}\n"
+        for category, task, progress in completed_tasks:
+            response += f"\nКатегория: {category}\nЗадача: {task} ({progress}%)\n"
         await message.answer(response)
     else:
-        await message.answer("Задач пока нет.")
+        await message.answer("Завершенных задач пока нет.")
 
 # Запуск бота
 async def main():
