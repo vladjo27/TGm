@@ -61,8 +61,6 @@ Personal Task Manager Bot - это телеграм-бот, который по�
  cd personal-task-manager-bot
 
 Установите необходимые зависимости:
-require 'redcarpet'
-markdown = Redcarpet.new("Hello World!")
 puts markdown.to_html
 
 pip install aiogram sqlite3
