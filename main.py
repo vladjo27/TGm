@@ -40,6 +40,13 @@ CREATE TABLE IF NOT EXISTS tasks (
 ''')
 conn.commit()
 
+# Проверка наличия столбца is_completed и его добавление, если его нет
+cursor.execute("PRAGMA table_info(tasks)")
+columns = [column[1] for column in cursor.fetchall()]
+if 'is_completed' not in columns:
+    cursor.execute('ALTER TABLE tasks ADD COLUMN is_completed INTEGER DEFAULT 0')
+conn.commit()
+
 # Состояния для FSM (Finite State Machine)
 class TaskStates(StatesGroup):
     waiting_for_category = State()
@@ -101,7 +108,7 @@ async def get_task(message: types.Message, state: FSMContext, next_state: State)
         categories = cursor.fetchall()
         if 0 <= category_number < len(categories):
             category = categories[category_number][0]
-            cursor.execute('SELECT id, task FROM tasks WHERE user_id = ? AND category = ?', (user_id, category))
+            cursor.execute('SELECT id, task FROM tasks WHERE user_id = ? AND category = ? AND is_completed = 0', (user_id, category))
             task_list = cursor.fetchall()
             if task_list:
                 tasks_list = "\n".join([f"{i + 1}. {task[1]}" for i, task in enumerate(task_list)])
@@ -109,7 +116,7 @@ async def get_task(message: types.Message, state: FSMContext, next_state: State)
                 await state.update_data(category=category, task_list=task_list)
                 await state.set_state(next_state)
             else:
-                await message.answer(f"В категории '{category}' задач нет.")
+                await message.answer(f"В категории '{category}' нет незавершенных задач.")
                 await state.clear()
         else:
             await message.answer("Неверный номер категории.")
@@ -130,18 +137,15 @@ async def add_task(message: types.Message, state: FSMContext):
 async def process_category(message: types.Message, state: FSMContext):
     user_id = (await state.get_data()).get("user_id")
     category = message.text.strip()
-    
     # Проверяем, существует ли такая категория для данного пользователя
     cursor.execute('SELECT DISTINCT category FROM tasks WHERE user_id = ?', (user_id,))
     categories = [row[0] for row in cursor.fetchall()]
-    
     if category in categories:
         # Если категория уже существует, используем её
         await message.answer(f"Категория '{category}' уже существует. Теперь введите задачу:")
     else:
         # Если категории нет, сообщаем, что она будет создана
         await message.answer(f"Создана новая категория '{category}'. Теперь введите задачу:")
-    
     # Обновляем состояние и переходим к вводу задачи
     await state.update_data(category=category)
     await state.set_state(TaskStates.waiting_for_task)
@@ -153,17 +157,14 @@ async def process_task(message: types.Message, state: FSMContext):
     data = await state.get_data()
     category = data.get("category")
     task = message.text.strip()
-    
     # Проверяем, существует ли такая категория для данного пользователя
     cursor.execute('SELECT DISTINCT category FROM tasks WHERE user_id = ?', (user_id,))
     categories = [row[0] for row in cursor.fetchall()]
-    
     if category not in categories:
         # Если категории нет, создаем её
         await message.answer(f"Создана новая категория '{category}'.")
-    
     # Добавляем задачу в категорию
-    cursor.execute('INSERT INTO tasks (user_id, category, task) VALUES (?, ?, ?)', (user_id, category, task))
+    cursor.execute('INSERT INTO tasks (user_id, category, task, is_completed) VALUES (?, ?, ?, 0)', (user_id, category, task))
     conn.commit()
     await message.answer(f"Задача добавлена в категорию '{category}': {task}")
     await state.clear()
@@ -174,7 +175,6 @@ async def show_tasks(message: types.Message):
     user_id = message.from_user.id
     cursor.execute('SELECT category, task FROM tasks WHERE user_id = ?', (user_id,))
     tasks = cursor.fetchall()
-    
     if tasks:
         # Группируем задачи по категориям
         tasks_by_category = {}
@@ -182,17 +182,16 @@ async def show_tasks(message: types.Message):
             if category not in tasks_by_category:
                 tasks_by_category[category] = []
             tasks_by_category[category].append(task)
-        
         # Формируем ответ
         response = "Ваши задачи:\n"
         for category, tasks_list in tasks_by_category.items():
             response += f"\nКатегория: {category}\n"
             for task in tasks_list:
                 response += f"- {task}\n"
-        
         await message.answer(response)
     else:
         await message.answer("Задач пока нет.")
+
 # Обработка кнопки "Удалить задачу"
 @dp.message(lambda message: message.text == "Удалить задачу")
 async def delete_task(message: types.Message, state: FSMContext):
@@ -320,14 +319,16 @@ async def process_task_number_to_mark_complete(message: types.Message, state: FS
         data = await state.get_data()
         category = data.get("category")
         task_list = data.get("task_list")
-        
+        logging.info(f"Category: {category}, Task List: {task_list}")
+        if task_list is None:
+            await message.answer(f"В категории '{category}' нет незавершенных задач.")
+            await state.clear()
+            return
         if 0 <= task_number < len(task_list):
             task_id = task_list[task_number][0]
-            
             # Проверяем, была ли задача уже завершена
             cursor.execute('SELECT is_completed FROM tasks WHERE id = ?', (task_id,))
             is_completed = cursor.fetchone()[0]
-            
             if is_completed:
                 await message.answer("Эта задача уже была завершена.")
             else:
@@ -341,7 +342,7 @@ async def process_task_number_to_mark_complete(message: types.Message, state: FS
     except ValueError:
         await message.answer("Пожалуйста, введите число.")
         await state.clear()
-        
+
 # Запуск бота
 async def main():
     await dp.start_polling(bot)
