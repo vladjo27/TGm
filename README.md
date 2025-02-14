@@ -54,13 +54,12 @@ BOT_TOKEN=YOUR_BOT_API_TOKEN_HERE
 
 ## Установка
 
-1. Клонируйте репозиторий:
+ 1. Клонируйте репозиторий:
+   ```bash
+   git clone https://github.com/yourusername/personal-task-manager-bot.git
+   cd personal-task-manager-bot
 
- ```bash
- git clone https://github.com/yourusername/personal-task-manager-bot.git
- cd personal-task-manager-bot
-
-### Установите необходимые зависимости:
+Установите необходимые зависимости:
 puts markdown.to_html
 
 pip install aiogram sqlite3
